@@ -7,3 +7,11 @@
 
 import Foundation
 
+public class Periscope {
+    public init() {}
+    
+    public func test() -> String {
+        return "Periscope is working!"
+    }
+}
+
