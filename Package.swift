@@ -28,7 +28,9 @@ let package = Package(
             name: "Periscope",
             dependencies: [],
             path: "Periscope",
-            sources: ["Periscope.swift"]),
+            resources: [
+                .process("JavaScript/ConsoleHook.js")
+            ]),
         .testTarget(
             name: "PeriscopeTests",
             dependencies: ["Periscope"],

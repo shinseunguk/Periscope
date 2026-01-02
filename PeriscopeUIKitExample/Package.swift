@@ -8,7 +8,7 @@ let package = Package(
         .macOS(.v10_15)
     ],
     dependencies: [
-        .package(path: "../..")
+        .package(name: "Periscope", path: "..")
     ],
     targets: [
         .executableTarget(
