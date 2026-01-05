@@ -6,6 +6,7 @@ public extension WKWebView {
     private struct AssociatedKeys {
         static var isPeriscopeEnabled = "isPeriscopeEnabled"
         static var periscopeMessageHandler = "periscopeMessageHandler"
+        static var messageHandlersRegistered = "messageHandlersRegistered"
     }
     
     /// Periscope 디버깅이 활성화되어 있는지 확인
@@ -21,18 +22,45 @@ public extension WKWebView {
     /// Periscope 디버깅 활성화 (자동으로 플로팅 버튼도 함께 활성화)
     /// - Parameter debugger: PeriscopeDebugger 인스턴스 (기본값: shared)
     func enablePeriscope(debugger: PeriscopeDebugger = .shared) {
-        guard !isPeriscopeEnabled else { return }
+        print("🔍 enablePeriscope called, current state: \(isPeriscopeEnabled)")
+        guard !isPeriscopeEnabled else { 
+            print("⚠️ Already enabled, returning")
+            return 
+        }
         
-        // JavaScript 메시지 핸들러 등록
+        // JavaScript 메시지 핸들러 등록 (한 번만 등록)
+        let handlersRegistered = objc_getAssociatedObject(self, &AssociatedKeys.messageHandlersRegistered) as? Bool ?? false
+        print("🔍 handlersRegistered: \(handlersRegistered)")
+        
+        // 항상 먼저 제거하고 다시 추가 (중복 방지)
+        print("🧹 Removing existing message handlers...")
+        configuration.userContentController.removeScriptMessageHandler(forName: "periscopeConsole")
+        configuration.userContentController.removeScriptMessageHandler(forName: "periscopeNetwork") 
+        configuration.userContentController.removeScriptMessageHandler(forName: "periscopeStorage")
+        
+        // 새로운 핸들러 등록
+        print("📝 Adding new message handlers...")
         let messageHandler = PeriscopeMessageHandler(debugger: debugger)
         objc_setAssociatedObject(self, &AssociatedKeys.periscopeMessageHandler, messageHandler, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         
         configuration.userContentController.add(messageHandler, name: "periscopeConsole")
         configuration.userContentController.add(messageHandler, name: "periscopeNetwork")
         configuration.userContentController.add(messageHandler, name: "periscopeStorage")
+        print("✅ Message handlers added")
         
         // Console hook 스크립트 주입
         injectConsoleHookScript()
+        
+        // 이미 초기화된 경우 활성화만 수행
+        let enableScript = """
+        (function() {
+            if (window.__periscopeInitialized && !window.__periscopeEnabled) {
+                window.__periscopeEnabled = true;
+                console.log('🟢 Periscope re-enabled');
+            }
+        })();
+        """
+        evaluateJavaScript(enableScript, completionHandler: nil)
         
         isPeriscopeEnabled = true
         
@@ -48,10 +76,30 @@ public extension WKWebView {
     func disablePeriscope() {
         guard isPeriscopeEnabled else { return }
         
+        // Message handlers 제거
+        print("🧹 Removing message handlers on disable...")
         configuration.userContentController.removeScriptMessageHandler(forName: "periscopeConsole")
         configuration.userContentController.removeScriptMessageHandler(forName: "periscopeNetwork")
         configuration.userContentController.removeScriptMessageHandler(forName: "periscopeStorage")
         objc_setAssociatedObject(self, &AssociatedKeys.periscopeMessageHandler, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        
+        // Periscope 완전 비활성화 (상태 초기화)
+        let disableScript = """
+        (function() {
+            if (window.__periscopeEnabled) {
+                window.__periscopeEnabled = false;
+                // 초기화 플래그도 제거하여 다음 enable 시 완전히 새로 시작
+                delete window.__periscopeInitialized;
+                console.log('🔴 Periscope disabled and reset');
+            }
+        })();
+        """
+        
+        evaluateJavaScript(disableScript, completionHandler: nil)
+        
+        // UserScripts 모두 제거 (다음 enable 시 깨끗하게 시작)
+        print("🧹 Removing all user scripts...")
+        configuration.userContentController.removeAllUserScripts()
         
         // 플로팅 버튼도 함께 비활성화
         PeriscopeDebugger.shared.disable()
@@ -82,6 +130,10 @@ public extension WKWebView {
     
     /// Console hook JavaScript 스크립트 주입
     private func injectConsoleHookScript() {
+        // 이미 userScript가 추가되어 있는지 확인
+        let hasUserScript = !configuration.userContentController.userScripts.isEmpty
+        print("🔍 injectConsoleHookScript - hasUserScript: \(hasUserScript), userScripts count: \(configuration.userContentController.userScripts.count)")
+        
         // SPM의 경우 Bundle.module 사용
         #if SWIFT_PACKAGE
         guard let scriptURL = Bundle.module.url(forResource: "ConsoleHook", withExtension: "js"),
@@ -104,14 +156,46 @@ public extension WKWebView {
                 return
             }
             
-            let userScript = WKUserScript(source: scriptContent, injectionTime: .atDocumentStart, forMainFrameOnly: false)
-            configuration.userContentController.addUserScript(userScript)
+            // UserScript가 없을 때만 추가
+            if !hasUserScript {
+                let userScript = WKUserScript(source: scriptContent, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+                configuration.userContentController.addUserScript(userScript)
+            }
+            
+            // 이미 로드된 페이지에서도 스크립트가 실행되도록 강제 주입
+            // 중복 실행 방지를 위해 체크 후 실행
+            evaluateJavaScript("typeof window.__periscopeInitialized === 'undefined'") { [weak self] result, error in
+                if let isNotInitialized = result as? Bool, isNotInitialized {
+                    self?.evaluateJavaScript(scriptContent, completionHandler: nil)
+                }
+            }
+            
             return
         }
         #endif
         
-        let userScript = WKUserScript(source: scriptContent, injectionTime: .atDocumentStart, forMainFrameOnly: false)
-        configuration.userContentController.addUserScript(userScript)
+        // UserScript가 없을 때만 추가
+        if !hasUserScript {
+            let userScript = WKUserScript(source: scriptContent, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+            configuration.userContentController.addUserScript(userScript)
+        }
+        
+        // 페이지가 이미 로드되어 있고, 스크립트가 아직 초기화되지 않은 경우에만 실행
+        evaluateJavaScript("document.readyState") { [weak self] result, error in
+            if let readyState = result as? String, readyState != "loading" {
+                // 페이지가 로드된 상태에서 스크립트 초기화 여부 확인
+                self?.evaluateJavaScript("typeof window.__periscopeInitialized === 'undefined'") { result, error in
+                    if let isNotInitialized = result as? Bool, isNotInitialized {
+                        print("🔧 Injecting script via evaluateJavaScript (page already loaded)")
+                        self?.evaluateJavaScript(scriptContent, completionHandler: nil)
+                    } else {
+                        print("ℹ️ Script already initialized, skipping evaluateJavaScript")
+                    }
+                }
+            } else {
+                print("ℹ️ Page is still loading, UserScript will handle initialization")
+            }
+        }
     }
     
     /// Periscope Bundle 가져오기
@@ -134,9 +218,26 @@ public extension WKWebView {
     
     /// 인라인 Console Hook 스크립트 주입 (fallback)
     private func injectInlineConsoleHookScript() {
+        // 이미 userScript가 추가되어 있는지 확인
+        let hasUserScript = !configuration.userContentController.userScripts.isEmpty
+        
         let inlineScript = """
         (function() {
             'use strict';
+            
+            // 중복 실행 방지
+            if (window.__periscopeInitialized) {
+                console.log('⚠️ Periscope script already initialized, skipping...');
+                // 활성화 상태만 업데이트
+                window.__periscopeEnabled = true;
+                console.log('🟢 Periscope re-enabled (script already initialized)');
+                return;
+            }
+            window.__periscopeInitialized = true;
+            console.log('🚀 Periscope script initializing for the first time...');
+            
+            // Periscope 활성화 상태 관리
+            window.__periscopeEnabled = true;
             
             const originalConsole = {
                 log: console.log,
@@ -150,6 +251,11 @@ public extension WKWebView {
             window.originalConsole = originalConsole;
             
             function sendToNative(level, args) {
+                // Periscope가 비활성화되어 있으면 전송하지 않음
+                if (!window.__periscopeEnabled) {
+                    return;
+                }
+                
                 try {
                     const message = args.map(arg => {
                         if (typeof arg === 'object') {
@@ -235,11 +341,17 @@ public extension WKWebView {
             
             // Network monitoring
             const originalFetch = window.fetch;
+            window.__originalFetch = originalFetch; // 원본 fetch 저장 (복원용)
+            
             window.fetch = function(...args) {
                 const [url, options = {}] = args;
                 const startTime = Date.now();
                 const requestId = Math.random().toString(36).substr(2, 9);
                 
+                // Periscope가 비활성화되어 있으면 원본 fetch만 호출
+                if (!window.__periscopeEnabled) {
+                    return originalFetch.apply(this, args);
+                }
                 
                 if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.periscopeNetwork) {
                     window.webkit.messageHandlers.periscopeNetwork.postMessage({
@@ -323,43 +435,65 @@ public extension WKWebView {
             // Storage monitoring
             function captureStorageData() {
                 try {
+                    originalConsole.log('🔍 captureStorageData called');
                     const storageData = { localStorage: {}, sessionStorage: {}, cookies: document.cookie };
                     
+                    originalConsole.log('📊 localStorage length:', localStorage.length);
                     for (let i = 0; i < localStorage.length; i++) {
                         const key = localStorage.key(i);
                         storageData.localStorage[key] = localStorage.getItem(key);
                     }
                     
+                    originalConsole.log('📊 sessionStorage length:', sessionStorage.length);
                     for (let i = 0; i < sessionStorage.length; i++) {
                         const key = sessionStorage.key(i);
                         storageData.sessionStorage[key] = sessionStorage.getItem(key);
                     }
                     
-                    console.log('🗃️ Capturing storage data:', JSON.stringify(storageData, null, 2));
+                    originalConsole.log('🗃️ Capturing storage data:', JSON.stringify(storageData, null, 2));
                     
                     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.periscopeStorage) {
+                        originalConsole.log('✅ periscopeStorage handler found, posting message...');
                         window.webkit.messageHandlers.periscopeStorage.postMessage(storageData);
-                        console.log('📤 Storage data sent to native');
+                        originalConsole.log('📤 Storage data sent to native');
                     } else {
-                        console.warn('⚠️ Periscope: Storage message handler not available');
+                        originalConsole.warn('⚠️ Periscope: Storage message handler not available');
+                        originalConsole.log('webkit:', window.webkit);
+                        originalConsole.log('messageHandlers:', window.webkit && window.webkit.messageHandlers);
+                        originalConsole.log('periscopeStorage:', window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.periscopeStorage);
                     }
                 } catch (e) {
-                    console.error('❌ Storage capture error:', e);
+                    originalConsole.error('❌ Storage capture error:', e);
                 }
             }
             
             // 전역에서 접근 가능하도록 노출
             window.captureStorageData = captureStorageData;
+            originalConsole.log('✅ window.captureStorageData has been set');
             
             // Storage event monitoring - Hook setItem, removeItem, clear
             const originalSetItem = Storage.prototype.setItem;
             const originalRemoveItem = Storage.prototype.removeItem;
             const originalClear = Storage.prototype.clear;
             
+            // 원본 함수들을 전역에 저장 (나중에 복원용)
+            window.__originalSetItem = originalSetItem;
+            window.__originalRemoveItem = originalRemoveItem;
+            window.__originalClear = originalClear;
+            
             Storage.prototype.setItem = function(key, value) {
                 try {
                     originalSetItem.apply(this, arguments);
-                    setTimeout(captureStorageData, 10);
+                    
+                    // Periscope가 활성화되어 있을 때만 캡처
+                    if (window.__periscopeEnabled) {
+                        originalConsole.log('🔧 Storage setItem called:', key, value);
+                        originalConsole.log('⏰ Scheduling captureStorageData...');
+                        setTimeout(function() {
+                            originalConsole.log('📤 Calling captureStorageData from setItem');
+                            captureStorageData();
+                        }, 100);
+                    }
                 } catch (e) {
                     originalConsole.error('Storage setItem error:', e);
                 }
@@ -383,12 +517,45 @@ public extension WKWebView {
                 }
             };
             
-            setTimeout(captureStorageData, 100);
+            // 초기 Storage 데이터 캡처를 좀 더 늦게 실행
+            setTimeout(function() {
+                originalConsole.log('📱 Initial storage capture after 500ms');
+                if (window.captureStorageData) {
+                    originalConsole.log('✅ captureStorageData is available, calling it...');
+                    captureStorageData();
+                } else {
+                    originalConsole.error('❌ captureStorageData is NOT available at initial capture time');
+                }
+            }, 500);
+            
+            // 스크립트 초기화 완료 확인
+            originalConsole.log('🎉 Storage monitoring script initialization completed');
+            originalConsole.log('📌 window.captureStorageData available:', typeof window.captureStorageData === 'function');
         })();
         """
         
-        let userScript = WKUserScript(source: inlineScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
-        configuration.userContentController.addUserScript(userScript)
+        // UserScript가 없을 때만 추가
+        if !hasUserScript {
+            let userScript = WKUserScript(source: inlineScript, injectionTime: .atDocumentStart, forMainFrameOnly: false)
+            configuration.userContentController.addUserScript(userScript)
+        }
+        
+        // 페이지가 이미 로드되어 있고, 스크립트가 아직 초기화되지 않은 경우에만 실행
+        evaluateJavaScript("document.readyState") { [weak self] result, error in
+            if let readyState = result as? String, readyState != "loading" {
+                // 페이지가 로드된 상태에서 스크립트 초기화 여부 확인
+                self?.evaluateJavaScript("typeof window.__periscopeInitialized === 'undefined'") { result, error in
+                    if let isNotInitialized = result as? Bool, isNotInitialized {
+                        print("🔧 Injecting inline script via evaluateJavaScript (page already loaded)")
+                        self?.evaluateJavaScript(inlineScript, completionHandler: nil)
+                    } else {
+                        print("ℹ️ Script already initialized, skipping evaluateJavaScript")
+                    }
+                }
+            } else {
+                print("ℹ️ Page is still loading, UserScript will handle initialization")
+            }
+        }
     }
 }
 
@@ -674,6 +841,49 @@ public extension WKWebView {
                 console.log('🚀 Periscope test page loaded successfully!');
                 console.info('ℹ️ Click the buttons above to test different console methods');
                 
+                // Debug: Check if captureStorageData is available
+                setTimeout(function() {
+                    console.log('🔍 Checking captureStorageData availability after page load...');
+                    console.log('  - window.captureStorageData:', typeof window.captureStorageData);
+                    console.log('  - window.__periscopeInitialized:', window.__periscopeInitialized);
+                }, 1000);
+                
+                // Fallback: Define captureStorageData if not available
+                if (!window.captureStorageData) {
+                    console.log('⚠️ captureStorageData not found, defining fallback...');
+                    window.captureStorageData = function() {
+                        try {
+                            console.log('📦 Fallback captureStorageData called');
+                            const storageData = { localStorage: {}, sessionStorage: {}, cookies: document.cookie };
+                            
+                            // Capture localStorage
+                            for (let i = 0; i < localStorage.length; i++) {
+                                const key = localStorage.key(i);
+                                storageData.localStorage[key] = localStorage.getItem(key);
+                            }
+                            
+                            // Capture sessionStorage
+                            for (let i = 0; i < sessionStorage.length; i++) {
+                                const key = sessionStorage.key(i);
+                                storageData.sessionStorage[key] = sessionStorage.getItem(key);
+                            }
+                            
+                            console.log('📦 Storage data captured:', JSON.stringify(storageData, null, 2));
+                            
+                            // Send to native
+                            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.periscopeStorage) {
+                                window.webkit.messageHandlers.periscopeStorage.postMessage(storageData);
+                                console.log('✅ Storage data sent to native via fallback');
+                            } else {
+                                console.error('❌ periscopeStorage message handler not available');
+                            }
+                        } catch (e) {
+                            console.error('❌ Fallback captureStorageData error:', e);
+                        }
+                    };
+                    console.log('✅ Fallback captureStorageData defined');
+                }
+                
                 // Test functions for console execution
                 window.test = function() {
                     console.log('Hello from window.test()!');
@@ -818,21 +1028,238 @@ public extension WKWebView {
                 
                 // Storage test functions
                 function testLocalStorage() {
-                    localStorage.setItem('test-key', 'Test value at ' + new Date().toLocaleTimeString());
-                    localStorage.setItem('user', JSON.stringify({name: 'John', age: 30}));
-                    console.log('LocalStorage updated');
+                    console.log('🔵 === Starting LocalStorage Test ===');
+                    
+                    try {
+                        // Check if localStorage is available
+                        if (typeof localStorage === 'undefined') {
+                            console.error('❌ localStorage is undefined');
+                            return;
+                        }
+                        
+                        console.log('✅ localStorage is available');
+                        console.log('📝 typeof localStorage:', typeof localStorage);
+                        
+                        // Try to access length safely
+                        let lengthBefore = 0;
+                        try {
+                            lengthBefore = localStorage.length || 0;
+                            console.log('📝 Current localStorage length before:', lengthBefore);
+                        } catch (e) {
+                            console.error('❌ Error accessing localStorage.length:', e);
+                        }
+                        
+                        // First item
+                        const testKey = 'test-key';
+                        const testValue = 'Test value at ' + new Date().toLocaleTimeString();
+                        console.log(`📝 Setting localStorage['${testKey}'] = '${testValue}'`);
+                        
+                        try {
+                            localStorage.setItem(testKey, testValue);
+                            console.log('✅ First item set successfully');
+                        } catch (e) {
+                            console.error('❌ Error setting first item:', e);
+                        }
+                        
+                        // Second item
+                        const userData = {name: 'John', age: 30};
+                        const userDataStr = JSON.stringify(userData);
+                        console.log(`📝 Setting localStorage['user'] = '${userDataStr}'`);
+                        
+                        try {
+                            localStorage.setItem('user', userDataStr);
+                            console.log('✅ Second item set successfully');
+                        } catch (e) {
+                            console.error('❌ Error setting second item:', e);
+                        }
+                        
+                        // Try to access length after
+                        let lengthAfter = 0;
+                        try {
+                            lengthAfter = localStorage.length || 0;
+                            console.log('📝 Current localStorage length after:', lengthAfter);
+                        } catch (e) {
+                            console.error('❌ Error accessing localStorage.length after:', e);
+                        }
+                        
+                        // List all keys
+                        console.log('📝 Trying to list all localStorage keys...');
+                        try {
+                            for (let i = 0; i < lengthAfter; i++) {
+                                const key = localStorage.key(i);
+                                const value = localStorage.getItem(key);
+                                console.log(`  - ${key}: ${value}`);
+                            }
+                        } catch (e) {
+                            console.error('❌ Error listing keys:', e);
+                        }
+                        
+                        console.log('✅ LocalStorage test completed');
+                        
+                        // Manual trigger for debugging
+                        console.log('🔍 Checking for window.captureStorageData...');
+                        console.log('  - typeof window:', typeof window);
+                        console.log('  - typeof window.captureStorageData:', typeof window.captureStorageData);
+                        console.log('  - window.captureStorageData:', window.captureStorageData);
+                        
+                        if (window.captureStorageData && typeof window.captureStorageData === 'function') {
+                            console.log('🔄 Manually calling captureStorageData...');
+                            window.captureStorageData();
+                        } else {
+                            console.error('❌ window.captureStorageData not found!');
+                            console.log('🔍 Checking window properties:');
+                            const keys = Object.keys(window).filter(key => key.includes('capture') || key.includes('Storage'));
+                            console.log('  - Related keys:', keys);
+                        }
+                        
+                    } catch (error) {
+                        console.error('❌ LocalStorage test error:', error);
+                        console.error('Error type:', typeof error);
+                        console.error('Error message:', error.message || 'No message');
+                        console.error('Error stack:', error.stack || 'No stack');
+                    }
+                    
+                    console.log('🔵 === End LocalStorage Test ===');
                 }
                 
                 function testSessionStorage() {
-                    sessionStorage.setItem('session-key', 'Session value at ' + new Date().toLocaleTimeString());
-                    sessionStorage.setItem('temp-data', 'This will be cleared when browser closes');
-                    console.log('SessionStorage updated');
+                    console.log('🟢 === Starting SessionStorage Test ===');
+                    
+                    try {
+                        // Check if sessionStorage is available
+                        if (typeof sessionStorage === 'undefined') {
+                            console.error('❌ sessionStorage is undefined');
+                            return;
+                        }
+                        
+                        console.log('✅ sessionStorage is available');
+                        console.log('📝 typeof sessionStorage:', typeof sessionStorage);
+                        
+                        // Try to access length safely
+                        let lengthBefore = 0;
+                        try {
+                            lengthBefore = sessionStorage.length || 0;
+                            console.log('📝 Current sessionStorage length before:', lengthBefore);
+                        } catch (e) {
+                            console.error('❌ Error accessing sessionStorage.length:', e);
+                        }
+                        
+                        // First item
+                        const sessionKey = 'session-key';
+                        const sessionValue = 'Session value at ' + new Date().toLocaleTimeString();
+                        console.log(`📝 Setting sessionStorage['${sessionKey}'] = '${sessionValue}'`);
+                        
+                        try {
+                            sessionStorage.setItem(sessionKey, sessionValue);
+                            console.log('✅ First item set successfully');
+                        } catch (e) {
+                            console.error('❌ Error setting first item:', e);
+                        }
+                        
+                        // Second item
+                        const tempData = 'This will be cleared when browser closes';
+                        console.log(`📝 Setting sessionStorage['temp-data'] = '${tempData}'`);
+                        
+                        try {
+                            sessionStorage.setItem('temp-data', tempData);
+                            console.log('✅ Second item set successfully');
+                        } catch (e) {
+                            console.error('❌ Error setting second item:', e);
+                        }
+                        
+                        // Try to access length after
+                        let lengthAfter = 0;
+                        try {
+                            lengthAfter = sessionStorage.length || 0;
+                            console.log('📝 Current sessionStorage length after:', lengthAfter);
+                        } catch (e) {
+                            console.error('❌ Error accessing sessionStorage.length after:', e);
+                        }
+                        
+                        // List all keys
+                        console.log('📝 Trying to list all sessionStorage keys...');
+                        try {
+                            for (let i = 0; i < lengthAfter; i++) {
+                                const key = sessionStorage.key(i);
+                                const value = sessionStorage.getItem(key);
+                                console.log(`  - ${key}: ${value}`);
+                            }
+                        } catch (e) {
+                            console.error('❌ Error listing keys:', e);
+                        }
+                        
+                        console.log('✅ SessionStorage test completed');
+                        
+                        // Manual trigger for debugging
+                        console.log('🔍 Checking for window.captureStorageData...');
+                        console.log('  - typeof window:', typeof window);
+                        console.log('  - typeof window.captureStorageData:', typeof window.captureStorageData);
+                        console.log('  - window.captureStorageData:', window.captureStorageData);
+                        
+                        if (window.captureStorageData && typeof window.captureStorageData === 'function') {
+                            console.log('🔄 Manually calling captureStorageData...');
+                            window.captureStorageData();
+                        } else {
+                            console.error('❌ window.captureStorageData not found!');
+                            console.log('🔍 Checking window properties:');
+                            const keys = Object.keys(window).filter(key => key.includes('capture') || key.includes('Storage'));
+                            console.log('  - Related keys:', keys);
+                        }
+                        
+                    } catch (error) {
+                        console.error('❌ SessionStorage test error:', error);
+                        console.error('Error type:', typeof error);
+                        console.error('Error message:', error.message || 'No message');
+                        console.error('Error stack:', error.stack || 'No stack');
+                    }
+                    
+                    console.log('🟢 === End SessionStorage Test ===');
                 }
                 
                 function testCookies() {
-                    document.cookie = 'test-cookie=value123; path=/';
-                    document.cookie = 'user-preference=dark-mode; expires=' + new Date(Date.now() + 86400000).toUTCString();
-                    console.log('Cookies updated');
+                    console.log('🟡 === Starting Cookie Test ===');
+                    
+                    try {
+                        console.log('📝 Current cookies before:', document.cookie);
+                        
+                        // First cookie
+                        const cookie1 = 'test-cookie=value123; path=/';
+                        console.log(`📝 Setting cookie: '${cookie1}'`);
+                        document.cookie = cookie1;
+                        console.log('✅ First cookie set successfully');
+                        
+                        // Second cookie with expiry
+                        const expiryDate = new Date(Date.now() + 86400000).toUTCString();
+                        const cookie2 = `user-preference=dark-mode; expires=${expiryDate}`;
+                        console.log(`📝 Setting cookie: '${cookie2}'`);
+                        document.cookie = cookie2;
+                        console.log('✅ Second cookie set successfully');
+                        
+                        console.log('📝 Current cookies after:', document.cookie);
+                        console.log('✅ Cookies updated successfully');
+                        
+                        // Manual trigger for debugging
+                        console.log('🔍 Checking for window.captureStorageData...');
+                        console.log('  - typeof window:', typeof window);
+                        console.log('  - typeof window.captureStorageData:', typeof window.captureStorageData);
+                        console.log('  - window.captureStorageData:', window.captureStorageData);
+                        
+                        if (window.captureStorageData && typeof window.captureStorageData === 'function') {
+                            console.log('🔄 Manually calling captureStorageData...');
+                            window.captureStorageData();
+                        } else {
+                            console.error('❌ window.captureStorageData not found!');
+                            console.log('🔍 Checking window properties:');
+                            const keys = Object.keys(window).filter(key => key.includes('capture') || key.includes('Storage'));
+                            console.log('  - Related keys:', keys);
+                        }
+                        
+                    } catch (error) {
+                        console.error('❌ Cookie test error:', error);
+                        console.error('Error stack:', error.stack);
+                    }
+                    
+                    console.log('🟡 === End Cookie Test ===');
                 }
                 
                 window.testMockAPI = function() {
@@ -870,6 +1297,7 @@ public extension WKWebView {
         </html>
         """
         
-        loadHTMLString(html, baseURL: nil)
+        // baseURL을 설정하여 Storage API가 정상 작동하도록 함
+        loadHTMLString(html, baseURL: URL(string: "http://localhost"))
     }
 }

@@ -174,6 +174,16 @@ public class PeriscopeDebugger: NSObject {
         if consoleModal == nil {
             consoleModal = PeriscopeConsoleModal(logs: logs)
             consoleModal?.delegate = self
+            
+            // 이미 저장된 네트워크 요청과 스토리지 데이터 전달
+            if !networkRequests.isEmpty {
+                let requests = Array(networkRequests.values)
+                consoleModal?.updateNetworkData(requests)
+            }
+            
+            if let storageData = currentStorageData {
+                consoleModal?.updateStorageData(storageData)
+            }
         }
         
         consoleModal?.show(in: window)
