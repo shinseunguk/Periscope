@@ -22,5 +22,10 @@ public struct PeriscopeSDK {
     public static func disable(in webView: WKWebView) {
         webView.disablePeriscope()
     }
+    
+    /// Enable debug mode to show SDK internal logs
+    public static func setDebugMode(_ enabled: Bool) {
+        PeriscopeConfig.setDebugMode(enabled)
+    }
 }
 

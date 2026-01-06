@@ -144,6 +144,26 @@ PeriscopeSDK.enable(in: webView)
 PeriscopeSDK.disable(in: webView)
 ```
 
+### Debug Mode 설정
+
+SDK 내부 로그를 확인하려면 Debug Mode를 활성화할 수 있습니다:
+
+```swift
+// Debug 모드 활성화 (SDK 내부 로그 출력)
+PeriscopeSDK.setDebugMode(true)
+
+// Debug 모드 비활성화 (기본값)
+PeriscopeSDK.setDebugMode(false)
+```
+
+Debug Mode를 활성화하면 다음과 같은 내부 로그를 확인할 수 있습니다:
+- WebView 메시지 핸들러 등록/해제
+- JavaScript 스크립트 주입 상태
+- 네트워크 요청/응답 처리
+- Storage 데이터 캡처
+
+**주의**: 프로덕션 환경에서는 Debug Mode를 비활성화하는 것을 권장합니다.
+
 ### 델리게이트 설정으로 고급 기능 활용
 
 ```swift

@@ -331,6 +331,15 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
             self.removeFromSuperview()
             self.isHidden = true
             self.isVisible = false
+            
+            // Clean up data when modal is hidden to reduce memory usage
+            if self.logs.count > 1000 {
+                self.logs = Array(self.logs.suffix(500))
+                self.applyFilters()
+            }
+            if self.networkRequests.count > 100 {
+                self.networkRequests = Array(self.networkRequests.prefix(50))
+            }
         }
     }
     
@@ -338,9 +347,9 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
         logs.append(log)
         applyFilters()
         
-        DispatchQueue.main.async {
-            self.tableView.reloadData()
-            self.scrollToBottom()
+        DispatchQueue.main.async { [weak self] in
+            self?.tableView.reloadData()
+            self?.scrollToBottom()
         }
     }
     
@@ -349,14 +358,14 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
             logs.removeAll()
             filteredLogs.removeAll()
             
-            DispatchQueue.main.async {
-                self.tableView.reloadData()
+            DispatchQueue.main.async { [weak self] in
+                self?.tableView.reloadData()
             }
         } else if tabSegmentedControl.selectedSegmentIndex == 1 {
             // Clear network requests
             networkRequests.removeAll()
-            DispatchQueue.main.async {
-                self.networkTableView.reloadData()
+            DispatchQueue.main.async { [weak self] in
+                self?.networkTableView.reloadData()
             }
         }
     }
@@ -364,7 +373,8 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
     private func scrollToBottom() {
         guard filteredLogs.count > 0 else { return }
         
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             // Double-check the count after async dispatch
             guard self.filteredLogs.count > 0 else { return }
             
@@ -416,7 +426,7 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
             consoleInputField.text = ""
             consoleInputField.resignFirstResponder()
             
-            print("🔍 Found WebView, executing: \(code)")
+            PeriscopeLogger.log("Found WebView, executing: \(code)")
             
             // console.log 명령어를 완전히 우회
             if code.contains("console.log(") {
@@ -434,8 +444,8 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
                         .replacingOccurrences(of: "\u{201C}", with: "\"") // 왼쪽 스마트 큰따옴표
                         .replacingOccurrences(of: "\u{201D}", with: "\"") // 오른쪽 스마트 큰따옴표
                     
-                    print("🔍 Raw argument: \(rawArgument)")
-                    print("🔍 Normalized argument: \(normalizedArgument)")
+                    PeriscopeLogger.log("Raw argument: \(rawArgument)")
+                    PeriscopeLogger.log("Normalized argument: \(normalizedArgument)")
                     
                     // 인수를 평가하고 결과를 출력
                     let evaluateCode = """
@@ -449,22 +459,22 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
                     })()
                     """
                     
-                    print("🔍 Executing normalized argument: \(normalizedArgument)")
-                    print("🔍 Full evaluate code: \(evaluateCode)")
+                    PeriscopeLogger.log("Executing normalized argument: \(normalizedArgument)")
+                    PeriscopeLogger.log("Full evaluate code: \(evaluateCode)")
                     
                     webView.evaluateJavaScript(evaluateCode) { [weak self] result, error in
                         DispatchQueue.main.async {
                             if let error = error {
-                                print("❌ JavaScript error: \(error)")
-                                print("❌ Error domain: \(error._domain)")
-                                print("❌ Error code: \(error._code)")
+                                PeriscopeLogger.error("JavaScript error: \(error)")
+                                PeriscopeLogger.error("Error domain: \(error._domain)")
+                                PeriscopeLogger.error("Error code: \(error._code)")
                                 if let userInfo = (error as NSError).userInfo as? [String: Any] {
-                                    print("❌ Error userInfo: \(userInfo)")
+                                    PeriscopeLogger.error("Error userInfo: \(userInfo)")
                                 }
                                 let errorLog = ConsoleLog(level: .error, message: "Error: \(error.localizedDescription)", source: "Console")
                                 self?.addLog(errorLog)
                             } else if let result = result {
-                                print("✅ JavaScript result: \(result)")
+                                PeriscopeLogger.log("JavaScript result: \(result)")
                                 // console.log의 출력을 시뮬레이트
                                 let logMessage = ConsoleLog(level: .log, message: "\(result)", source: "Console")
                                 self?.addLog(logMessage)
@@ -480,7 +490,7 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
                 }
             } else {
                 // 다른 코드는 직접 실행 (Promise 처리 포함)
-                print("🔍 Executing other code directly: \(code)")
+                PeriscopeLogger.log("Executing other code directly: \(code)")
                 
                 let wrappedCode = """
                 (function() {
@@ -507,11 +517,11 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
                 webView.evaluateJavaScript(wrappedCode) { [weak self] result, error in
                     DispatchQueue.main.async {
                         if let error = error {
-                            print("❌ Direct execution error: \(error)")
-                            print("❌ Error domain: \(error._domain)")
-                            print("❌ Error code: \(error._code)")
+                            PeriscopeLogger.error("Direct execution error: \(error)")
+                            PeriscopeLogger.error("Error domain: \(error._domain)")
+                            PeriscopeLogger.error("Error code: \(error._code)")
                             if let userInfo = (error as NSError).userInfo as? [String: Any] {
-                                print("❌ Error userInfo: \(userInfo)")
+                                PeriscopeLogger.error("Error userInfo: \(userInfo)")
                             }
                             let errorLog = ConsoleLog(level: .error, message: "Error: \(error.localizedDescription)", source: "Console")
                             self?.addLog(errorLog)
@@ -589,7 +599,7 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
     }
     
     @objc private func tabChanged(_ sender: UISegmentedControl) {
-        print("📱 Tab changed to: \(sender.selectedSegmentIndex) (0=Console, 1=Network, 2=Storage)")
+        PeriscopeLogger.log("Tab changed to: \(sender.selectedSegmentIndex) (0=Console, 1=Network, 2=Storage)")
         switch sender.selectedSegmentIndex {
         case 0: // Console
             filterStackView.isHidden = false
@@ -605,7 +615,7 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
             networkTableView.isHidden = false
             storageTableView.isHidden = true
             clearButton.isHidden = false
-            print("🔍 Network tab selected - showing \(networkRequests.count) requests")
+            PeriscopeLogger.log("Network tab selected - showing \(networkRequests.count) requests")
         case 2: // Storage
             filterStackView.isHidden = true
             consoleInputContainer.isHidden = true
@@ -620,24 +630,24 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
     
     public func updateNetworkData(_ requests: [NetworkRequest]) {
         networkRequests = requests.sorted { $0.requestTime > $1.requestTime }
-        print("🔄 Updating network data with \(requests.count) requests")
-        print("📋 Current tab: \(tabSegmentedControl.selectedSegmentIndex) (0=Console, 1=Network, 2=Storage)")
-        DispatchQueue.main.async {
-            self.networkTableView.reloadData()
-            print("🔄 Network table view reloaded with \(self.networkRequests.count) items")
+        PeriscopeLogger.log("Updating network data with \(requests.count) requests")
+        PeriscopeLogger.log("Current tab: \(tabSegmentedControl.selectedSegmentIndex) (0=Console, 1=Network, 2=Storage)")
+        DispatchQueue.main.async { [weak self] in
+            self?.networkTableView.reloadData()
+            PeriscopeLogger.log("Network table view reloaded with \(self?.networkRequests.count ?? 0) items")
         }
     }
     
     public func updateStorageData(_ data: StorageData) {
-        print("📦 Storage data received:")
-        print("  - localStorage: \(data.localStorage.count) items")
-        print("  - sessionStorage: \(data.sessionStorage.count) items") 
-        print("  - cookies: \(data.cookies.isEmpty ? "empty" : "has data")")
+        PeriscopeLogger.log("Storage data received:")
+        PeriscopeLogger.log("  - localStorage: \(data.localStorage.count) items")
+        PeriscopeLogger.log("  - sessionStorage: \(data.sessionStorage.count) items") 
+        PeriscopeLogger.log("  - cookies: \(data.cookies.isEmpty ? "empty" : "has data")")
         
         storageData = data
-        DispatchQueue.main.async {
-            self.storageTableView.reloadData()
-            print("🔄 Storage table view reloaded")
+        DispatchQueue.main.async { [weak self] in
+            self?.storageTableView.reloadData()
+            PeriscopeLogger.log("Storage table view reloaded")
         }
     }
     
@@ -675,14 +685,14 @@ extension PeriscopeConsoleModal: UITableViewDataSource, UITableViewDelegate {
             let sessionCount = storageData?.sessionStorage.count ?? 0 
             let cookieCount = storageData?.parsedCookies.count ?? 0
             let rowCount = section == 0 ? localCount : section == 1 ? sessionCount : cookieCount
-            print("📊 Storage tableView rows for section \(section): \(rowCount)")
-            print("📊 Storage data details: localStorage=\(localCount), sessionStorage=\(sessionCount), cookies=\(cookieCount)")
+            PeriscopeLogger.log("Storage tableView rows for section \(section): \(rowCount)")
+            PeriscopeLogger.log("Storage data details: localStorage=\(localCount), sessionStorage=\(sessionCount), cookies=\(cookieCount)")
             if let data = storageData {
-                print("📦 Current localStorage: \(data.localStorage)")
-                print("📦 Current sessionStorage: \(data.sessionStorage)")
-                print("📦 Current cookies: \(data.cookies)")
+                PeriscopeLogger.log("Current localStorage: \(data.localStorage)")
+                PeriscopeLogger.log("Current sessionStorage: \(data.sessionStorage)")
+                PeriscopeLogger.log("Current cookies: \(data.cookies)")
             } else {
-                print("⚠️ No storage data available")
+                PeriscopeLogger.warning("No storage data available")
             }
             
             // 빈 상태일 때도 최소 1개 행 표시 (메시지용)
@@ -837,6 +847,16 @@ private class ConsoleLogCell: UITableViewCell {
         ])
     }
     
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        levelLabel.text = nil
+        timeLabel.text = nil
+        messageLabel.text = nil
+        messageLabel.textColor = UIColor.label
+        sourceLabel.text = nil
+        sourceLabel.isHidden = true
+    }
+    
     func configure(with log: ConsoleLog) {
         levelLabel.text = log.level.emoji
         timeLabel.text = log.formattedTimestamp
@@ -928,6 +948,17 @@ private class NetworkRequestCell: UITableViewCell {
         ])
     }
     
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        methodLabel.text = nil
+        methodLabel.textColor = UIColor.label
+        urlLabel.text = nil
+        statusLabel.text = nil
+        statusLabel.textColor = UIColor.label
+        durationLabel.text = nil
+        sizeLabel.text = nil
+    }
+    
     func configure(with request: NetworkRequest) {
         methodLabel.text = request.method
         urlLabel.text = request.url
@@ -1015,6 +1046,12 @@ private class StorageItemCell: UITableViewCell {
             valueLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
             valueLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8)
         ])
+    }
+    
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        keyLabel.text = nil
+        valueLabel.text = nil
     }
     
     func configure(key: String, value: String) {

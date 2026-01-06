@@ -81,10 +81,10 @@ public class PeriscopeDebugger: NSObject {
     
     public func addNetworkRequest(_ request: NetworkRequest) {
         DispatchQueue.main.async { [weak self] in
-            print("📥 Adding network request: \(request.method) \(request.url)")
+            PeriscopeLogger.log("Adding network request: \(request.method) \(request.url)")
             self?.networkRequests[request.id] = request
             if let requests = self?.networkRequests.values {
-                print("📊 Total network requests: \(requests.count)")
+                PeriscopeLogger.log("Total network requests: \(requests.count)")
                 self?.consoleModal?.updateNetworkData(Array(requests))
             }
         }

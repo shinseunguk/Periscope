@@ -22,31 +22,31 @@ public extension WKWebView {
     /// Periscope 디버깅 활성화 (자동으로 플로팅 버튼도 함께 활성화)
     /// - Parameter debugger: PeriscopeDebugger 인스턴스 (기본값: shared)
     func enablePeriscope(debugger: PeriscopeDebugger = .shared) {
-        print("🔍 enablePeriscope called, current state: \(isPeriscopeEnabled)")
+        PeriscopeLogger.log("enablePeriscope called, current state: \(isPeriscopeEnabled)")
         guard !isPeriscopeEnabled else { 
-            print("⚠️ Already enabled, returning")
+            PeriscopeLogger.warning("Already enabled, returning")
             return 
         }
         
         // JavaScript 메시지 핸들러 등록 (한 번만 등록)
         let handlersRegistered = objc_getAssociatedObject(self, &AssociatedKeys.messageHandlersRegistered) as? Bool ?? false
-        print("🔍 handlersRegistered: \(handlersRegistered)")
+        PeriscopeLogger.log("handlersRegistered: \(handlersRegistered)")
         
         // 항상 먼저 제거하고 다시 추가 (중복 방지)
-        print("🧹 Removing existing message handlers...")
+        PeriscopeLogger.log("Removing existing message handlers...")
         configuration.userContentController.removeScriptMessageHandler(forName: "periscopeConsole")
         configuration.userContentController.removeScriptMessageHandler(forName: "periscopeNetwork") 
         configuration.userContentController.removeScriptMessageHandler(forName: "periscopeStorage")
         
         // 새로운 핸들러 등록
-        print("📝 Adding new message handlers...")
+        PeriscopeLogger.log("Adding new message handlers...")
         let messageHandler = PeriscopeMessageHandler(debugger: debugger)
         objc_setAssociatedObject(self, &AssociatedKeys.periscopeMessageHandler, messageHandler, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         
         configuration.userContentController.add(messageHandler, name: "periscopeConsole")
         configuration.userContentController.add(messageHandler, name: "periscopeNetwork")
         configuration.userContentController.add(messageHandler, name: "periscopeStorage")
-        print("✅ Message handlers added")
+        PeriscopeLogger.log("Message handlers added")
         
         // Console hook 스크립트 주입
         injectConsoleHookScript()
@@ -77,7 +77,7 @@ public extension WKWebView {
         guard isPeriscopeEnabled else { return }
         
         // Message handlers 제거
-        print("🧹 Removing message handlers on disable...")
+        PeriscopeLogger.log("Removing message handlers on disable...")
         configuration.userContentController.removeScriptMessageHandler(forName: "periscopeConsole")
         configuration.userContentController.removeScriptMessageHandler(forName: "periscopeNetwork")
         configuration.userContentController.removeScriptMessageHandler(forName: "periscopeStorage")
@@ -98,7 +98,7 @@ public extension WKWebView {
         evaluateJavaScript(disableScript, completionHandler: nil)
         
         // UserScripts 모두 제거 (다음 enable 시 깨끗하게 시작)
-        print("🧹 Removing all user scripts...")
+        PeriscopeLogger.log("Removing all user scripts...")
         configuration.userContentController.removeAllUserScripts()
         
         // 플로팅 버튼도 함께 비활성화
@@ -132,7 +132,7 @@ public extension WKWebView {
     private func injectConsoleHookScript() {
         // 이미 userScript가 추가되어 있는지 확인
         let hasUserScript = !configuration.userContentController.userScripts.isEmpty
-        print("🔍 injectConsoleHookScript - hasUserScript: \(hasUserScript), userScripts count: \(configuration.userContentController.userScripts.count)")
+        PeriscopeLogger.log("injectConsoleHookScript - hasUserScript: \(hasUserScript), userScripts count: \(configuration.userContentController.userScripts.count)")
         
         // SPM의 경우 Bundle.module 사용
         #if SWIFT_PACKAGE
@@ -186,14 +186,14 @@ public extension WKWebView {
                 // 페이지가 로드된 상태에서 스크립트 초기화 여부 확인
                 self?.evaluateJavaScript("typeof window.__periscopeInitialized === 'undefined'") { result, error in
                     if let isNotInitialized = result as? Bool, isNotInitialized {
-                        print("🔧 Injecting script via evaluateJavaScript (page already loaded)")
+                        PeriscopeLogger.log("Injecting script via evaluateJavaScript (page already loaded)")
                         self?.evaluateJavaScript(scriptContent, completionHandler: nil)
                     } else {
-                        print("ℹ️ Script already initialized, skipping evaluateJavaScript")
+                        PeriscopeLogger.log("Script already initialized, skipping evaluateJavaScript")
                     }
                 }
             } else {
-                print("ℹ️ Page is still loading, UserScript will handle initialization")
+                PeriscopeLogger.log("Page is still loading, UserScript will handle initialization")
             }
         }
     }
@@ -546,14 +546,14 @@ public extension WKWebView {
                 // 페이지가 로드된 상태에서 스크립트 초기화 여부 확인
                 self?.evaluateJavaScript("typeof window.__periscopeInitialized === 'undefined'") { result, error in
                     if let isNotInitialized = result as? Bool, isNotInitialized {
-                        print("🔧 Injecting inline script via evaluateJavaScript (page already loaded)")
+                        PeriscopeLogger.log("Injecting inline script via evaluateJavaScript (page already loaded)")
                         self?.evaluateJavaScript(inlineScript, completionHandler: nil)
                     } else {
-                        print("ℹ️ Script already initialized, skipping evaluateJavaScript")
+                        PeriscopeLogger.log("Script already initialized, skipping evaluateJavaScript")
                     }
                 }
             } else {
-                print("ℹ️ Page is still loading, UserScript will handle initialization")
+                PeriscopeLogger.log("Page is still loading, UserScript will handle initialization")
             }
         }
     }
@@ -601,7 +601,7 @@ private class PeriscopeMessageHandler: NSObject, WKScriptMessageHandler {
         
         if isNetworkResponseLog {
             // 네트워크 응답 로그는 Console 탭에 표시하지 않음 (Network 탭에서 확인 가능)
-            print("📝 Network response log filtered from Console tab: \(messageText.prefix(50))...")
+            PeriscopeLogger.log("Network response log filtered from Console tab: \(messageText.prefix(50))...")
             return
         }
         
@@ -615,11 +615,11 @@ private class PeriscopeMessageHandler: NSObject, WKScriptMessageHandler {
         guard let body = message.body as? [String: Any],
               let type = body["type"] as? String,
               let id = body["id"] as? String else { 
-            print("❌ Network message parsing failed: \(message.body)")
+            PeriscopeLogger.error("Network message parsing failed: \(message.body)")
             return 
         }
         
-        print("📡 Network message received: \(type) for \(id)")
+        PeriscopeLogger.log("Network message received: \(type) for \(id)")
         
         switch type {
         case "request":
@@ -630,11 +630,11 @@ private class PeriscopeMessageHandler: NSObject, WKScriptMessageHandler {
                 headers: body["headers"] as? [String: String]
             )
             debugger.addNetworkRequest(request)
-            print("✅ Network request added: \(request.method) \(request.url)")
+            PeriscopeLogger.log("Network request added: \(request.method) \(request.url)")
             
         case "response":
             debugger.updateNetworkRequest(id: id, response: body)
-            print("✅ Network response updated for \(id)")
+            PeriscopeLogger.log("Network response updated for \(id)")
             
         case "error":
             debugger.updateNetworkRequestError(
@@ -642,18 +642,18 @@ private class PeriscopeMessageHandler: NSObject, WKScriptMessageHandler {
                 error: body["error"] as? String ?? "Unknown error",
                 duration: body["duration"] as? Double
             )
-            print("❌ Network error updated for \(id)")
+            PeriscopeLogger.error("Network error updated for \(id)")
             
         default:
-            print("⚠️ Unknown network message type: \(type)")
+            PeriscopeLogger.warning("Unknown network message type: \(type)")
             break
         }
     }
     
     private func handleStorageMessage(_ message: WKScriptMessage, debugger: PeriscopeDebugger) {
-        print("💾 Storage message received: \(message.body)")
+        PeriscopeLogger.log("Storage message received: \(message.body)")
         guard let body = message.body as? [String: Any] else { 
-            print("❌ Storage message body parsing failed")
+            PeriscopeLogger.error("Storage message body parsing failed")
             return 
         }
         
@@ -661,10 +661,10 @@ private class PeriscopeMessageHandler: NSObject, WKScriptMessageHandler {
         let sessionStorage = body["sessionStorage"] as? [String: String] ?? [:]
         let cookies = body["cookies"] as? String ?? ""
         
-        print("📦 Parsed storage data:")
-        print("  - localStorage: \(localStorage.count) items: \(localStorage)")
-        print("  - sessionStorage: \(sessionStorage.count) items: \(sessionStorage)")
-        print("  - cookies: \(cookies.isEmpty ? "empty" : cookies)")
+        PeriscopeLogger.log("Parsed storage data:")
+        PeriscopeLogger.log("  - localStorage: \(localStorage.count) items: \(localStorage)")
+        PeriscopeLogger.log("  - sessionStorage: \(sessionStorage.count) items: \(sessionStorage)")
+        PeriscopeLogger.log("  - cookies: \(cookies.isEmpty ? "empty" : cookies)")
         
         let storageData = StorageData(
             localStorage: localStorage,
