@@ -24,7 +24,7 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
     private var networkTableView: UITableView!
     private var storageTableView: UITableView!
     
-    private var logs: [ConsoleLog] = []
+    internal var logs: [ConsoleLog] = []
     private var filteredLogs: [ConsoleLog] = []
     private var selectedFilters: Set<ConsoleLogLevel> = Set(ConsoleLogLevel.allCases)
     private var networkRequests: [NetworkRequest] = []
@@ -345,6 +345,12 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
     
     public func addLog(_ log: ConsoleLog) {
         logs.append(log)
+        
+        // 로그 개수 제한 (메모리 누수 방지)
+        if logs.count > 500 {
+            logs.removeFirst(logs.count - 300) // 300개만 유지
+        }
+        
         applyFilters()
         
         DispatchQueue.main.async { [weak self] in
@@ -630,7 +636,13 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
     
     public func updateNetworkData(_ requests: [NetworkRequest]) {
         networkRequests = requests.sorted { $0.requestTime > $1.requestTime }
-        PeriscopeLogger.log("Updating network data with \(requests.count) requests")
+        
+        // 네트워크 요청 개수 제한 (메모리 누수 방지)
+        if networkRequests.count > 30 {
+            networkRequests = Array(networkRequests.prefix(30))
+        }
+        
+        PeriscopeLogger.log("Updating network data with \(networkRequests.count) requests")
         PeriscopeLogger.log("Current tab: \(tabSegmentedControl.selectedSegmentIndex) (0=Console, 1=Network, 2=Storage)")
         DispatchQueue.main.async { [weak self] in
             self?.networkTableView.reloadData()
@@ -667,6 +679,21 @@ public class PeriscopeConsoleModal: UIView, UITextFieldDelegate {
         }
         
         parentVC?.present(navController, animated: true)
+    }
+    
+    public func cleanupMemoryOnBackground() {
+        // 백그라운드에서 메모리 정리
+        if logs.count > 100 {
+            logs = Array(logs.suffix(50))
+            applyFilters()
+        }
+        
+        if networkRequests.count > 20 {
+            networkRequests = Array(networkRequests.prefix(10))
+        }
+        
+        // Storage 데이터는 최신 상태만 유지
+        storageData = nil
     }
 }
 

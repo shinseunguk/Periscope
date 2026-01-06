@@ -33,6 +33,32 @@ public class PeriscopeDebugger: NSObject {
     
     private override init() {
         super.init()
+        
+        // 앱이 백그라운드로 갈 때 메모리 정리
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.cleanupMemoryOnBackground()
+        }
+    }
+    
+    private func cleanupMemoryOnBackground() {
+        // 백그라운드 시 과도한 데이터 정리
+        if logs.count > 50 {
+            logs = Array(logs.suffix(50))
+        }
+        
+        if networkRequests.count > 10 {
+            let sortedRequests = networkRequests.values.sorted { $0.requestTime > $1.requestTime }
+            networkRequests.removeAll()
+            for request in sortedRequests.prefix(10) {
+                networkRequests[request.id] = request
+            }
+        }
+        
+        consoleModal?.cleanupMemoryOnBackground()
     }
     
     // MARK: - Public Methods
@@ -48,19 +74,26 @@ public class PeriscopeDebugger: NSObject {
     
     public func disable() {
         isEnabled = false
+        
+        // 메모리 정리
+        logs.removeAll()
+        networkRequests.removeAll()
+        
+        // Modal 메모리 정리
+        consoleModal?.removeFromSuperview()
+        consoleModal = nil
+        
+        // 플로팅 버튼 정리
+        floatingButton?.removeFromSuperview()
+        floatingButton = nil
     }
     
     public func addLog(_ log: ConsoleLog) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            self.logs.append(log)
-            
-            // 로그 개수 제한
-            if self.logs.count > self.maxLogCount {
-                self.logs.removeFirst(self.logs.count - self.maxLogCount)
-            }
-            
+            // 메모리 절약: PeriscopeDebugger에는 저장하지 않고 Modal에만 전달
+            // (중복 저장 방지)
             self.consoleModal?.addLog(log)
             self.delegate?.periscopeDebugger(self, didReceiveLog: log)
         }
@@ -72,27 +105,43 @@ public class PeriscopeDebugger: NSObject {
     }
     
     public func getAllLogs() -> [ConsoleLog] {
-        return logs
+        // Modal에서 로그를 가져옴 (중복 저장 방지)
+        return consoleModal?.logs ?? []
     }
     
     public func getFilteredLogs(levels: [ConsoleLogLevel]) -> [ConsoleLog] {
-        return logs.filter { levels.contains($0.level) }
+        return getAllLogs().filter { levels.contains($0.level) }
     }
     
     public func addNetworkRequest(_ request: NetworkRequest) {
         DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             PeriscopeLogger.log("Adding network request: \(request.method) \(request.url)")
-            self?.networkRequests[request.id] = request
-            if let requests = self?.networkRequests.values {
-                PeriscopeLogger.log("Total network requests: \(requests.count)")
-                self?.consoleModal?.updateNetworkData(Array(requests))
+            
+            // 네트워크 요청 개수 제한 (메모리 누수 방지)
+            if self.networkRequests.count >= 50 {
+                // 가장 오래된 요청 제거
+                let oldestKey = self.networkRequests.keys.min { a, b in
+                    let reqA = self.networkRequests[a]?.requestTime ?? Date()
+                    let reqB = self.networkRequests[b]?.requestTime ?? Date()
+                    return reqA < reqB
+                }
+                if let key = oldestKey {
+                    self.networkRequests.removeValue(forKey: key)
+                }
             }
+            
+            self.networkRequests[request.id] = request
+            let requests = Array(self.networkRequests.values)
+            PeriscopeLogger.log("Total network requests: \(requests.count)")
+            self.consoleModal?.updateNetworkData(requests)
         }
     }
     
     public func updateNetworkRequest(id: String, response: [String: Any]) {
         DispatchQueue.main.async { [weak self] in
-            guard var request = self?.networkRequests[id] else { return }
+            guard let self = self,
+                  var request = self.networkRequests[id] else { return }
             
             request.status = .success
             request.statusCode = response["status"] as? Int
@@ -100,25 +149,24 @@ public class PeriscopeDebugger: NSObject {
             request.responseBody = response["body"] as? String
             request.duration = (response["duration"] as? Double).map { $0 / 1000 }
             
-            self?.networkRequests[id] = request
-            if let requests = self?.networkRequests.values {
-                self?.consoleModal?.updateNetworkData(Array(requests))
-            }
+            self.networkRequests[id] = request
+            let requests = Array(self.networkRequests.values)
+            self.consoleModal?.updateNetworkData(requests)
         }
     }
     
     public func updateNetworkRequestError(id: String, error: String, duration: Double?) {
         DispatchQueue.main.async { [weak self] in
-            guard var request = self?.networkRequests[id] else { return }
+            guard let self = self,
+                  var request = self.networkRequests[id] else { return }
             
             request.status = .error
             request.error = error
             request.duration = duration.map { $0 / 1000 }
             
-            self?.networkRequests[id] = request
-            if let requests = self?.networkRequests.values {
-                self?.consoleModal?.updateNetworkData(Array(requests))
-            }
+            self.networkRequests[id] = request
+            let requests = Array(self.networkRequests.values)
+            self.consoleModal?.updateNetworkData(requests)
         }
     }
     

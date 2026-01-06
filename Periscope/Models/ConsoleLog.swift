@@ -31,9 +31,11 @@ public struct ConsoleLog {
     
     public init(level: ConsoleLogLevel, message: String, source: String? = nil) {
         self.level = level
-        self.message = message
+        // 메모리 절약을 위해 메시지 길이 제한
+        self.message = message.count > 1000 ? String(message.prefix(1000)) + "..." : message
         self.timestamp = Date()
-        self.source = source
+        // 소스 정보도 길이 제한
+        self.source = source?.count ?? 0 > 200 ? String(source!.prefix(200)) + "..." : source
     }
     
     public var formattedTimestamp: String {
